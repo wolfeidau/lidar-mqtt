@@ -78,7 +78,7 @@ int main( int argc, char* argv[] )
     if( argc < 4 || showHelp ) {
 
         printf( "Usage: %s <mqtt_address> <serial_port> <baudrate> <intensities>\n\n", argv[0] );
-        printf( "Example:%s tcp://localhost:1883 /dev/ttyUSB0 115200 0\n\n", argv[0] );
+        printf( "Example:%s tcp://localhost:1883 /dev/ttyUSB0 128000 0\n\n", argv[0] );
 
         if( !showHelp ) {
             return -1;
