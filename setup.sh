@@ -2,11 +2,16 @@
 echo "Backing lib"
 rm -rf lib_bk
 rm -rf build
+rm -rf sdk
 mkdir build
 mv lib lib_bk
 mkdir tmp
 mkdir lib
 cd tmp
+echo "Cloning ydlidar sdk"
+git clone https://github.com/EAIBOT/ydlidar.git
+cp -r ydlidar/sdk ../
+sed -i '/add_subdirectory/s/^/#/g' ../sdk/CMakeLists.txt
 echo "Downloading Paho mqtt cpp ...."
 curl -LO https://github.com/eclipse/paho.mqtt.cpp/archive/v1.0.0.zip
 unzip v1.0.0.zip

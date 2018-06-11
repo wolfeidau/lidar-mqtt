@@ -1,3 +1,18 @@
+/*
+Copyright 2018 Mark Wolfe
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 #include <random>
 #include <string>
 #include <thread>
@@ -6,87 +21,145 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <signal.h>
+#include <memory>
+#include <unistd.h>
+
+#include <json/json.h>
 #include "mqtt/async_client.h"
+
+#include "CYdLidar.h"
 
 using namespace std;
 using namespace std::chrono;
+using namespace ydlidar;
 
-const std::string DFLT_ADDRESS { "tcp://localhost:1883" };
+CYdLidar laser;
 
-const string TOPIC { "data/rand" };
-const int	 QOS = 1;
+const string TOPIC { "data/lidar" };
+const int    QOS = 1;
 
-const auto PERIOD = seconds(5);
+const auto PERIOD = milliseconds( 50 );
 
-const int MAX_BUFFERED_MSGS = 120;	// 120 * 5sec => 10min off-line buffering
+const int MAX_BUFFERED_MSGS = 120;  // 120 * 5sec => 10min off-line buffering
 
 const string PERSIST_DIR { "data-persist" };
 
+static bool running = true;
+
+static void Stop( int signo )
+{
+
+    printf( "Received exit signal\n" );
+    running = false;
+
+}
+
 /////////////////////////////////////////////////////////////////////////////
 
-int main(int argc, char* argv[])
+template <typename Iterable>
+Json::Value iterable2json( Iterable const& cont )
 {
-	string address = (argc > 1) ? string(argv[1]) : DFLT_ADDRESS;
+    Json::Value v( Json::arrayValue );
 
-	mqtt::async_client cli(address, "", MAX_BUFFERED_MSGS, PERSIST_DIR);
+    for( auto && element : cont ) {
+        v.append( element );
+    }
 
-	mqtt::connect_options connOpts;
-	connOpts.set_keep_alive_interval(MAX_BUFFERED_MSGS * PERIOD);
-	connOpts.set_clean_session(true);
-	connOpts.set_automatic_reconnect(true);
+    return v;
+}
 
-	// Create a topic object. This is a conventience since we will
-	// repeatedly publish messages with the same parameters.
-	mqtt::topic top(cli, TOPIC, QOS, true);
+int main( int argc, char* argv[] )
+{
 
-	// Random number generator [0 - 100]
-	random_device rnd;
-    mt19937 gen(rnd());
-    uniform_int_distribution<> dis(0, 100);
+    bool showHelp  = argc > 1 && !strcmp( argv[1], "--help" );
+    printf( " YDLIDAR C++ TEST\n" );
 
-	try {
-		// Connect to the MQTT broker
-		cout << "Connecting to server '" << address << "'..." << flush;
-		cli.connect(connOpts)->wait();
-		cout << "OK\n" << endl;
+    if( argc < 4 || showHelp ) {
 
-		char tmbuf[32];
-		unsigned nsample = 0;
+        printf( "Usage: %s <mqtt_address> <serial_port> <baudrate> <intensities>\n\n", argv[0] );
+        printf( "Example:%s tcp://localhost:1883 /dev/ttyUSB0 115200 0\n\n", argv[0] );
 
-		// The time at which to reads the next sample, starting now
-		auto tm = steady_clock::now();
+        if( !showHelp ) {
+            return -1;
+        } else {
+            return 0;
+        }
+    }
 
-		while (true) {
-			// Pace the samples to the desired rate
-			this_thread::sleep_until(tm);
+    const std::string address = string( argv[1] );
+    const std::string port = string( argv[2] );
+    const int baud =  atoi( argv[3] );
+    const int intensities =  atoi( argv[4] );
 
-			// Get a timestamp and format as a string
-			time_t t = system_clock::to_time_t(system_clock::now());
-			strftime(tmbuf, sizeof(tmbuf), "%F %T", localtime(&t));
+    signal( SIGINT, Stop );
+    signal( SIGTERM, Stop );
 
-			// Simulate reading some data
-			int x = dis(gen);
+    mqtt::async_client cli( address, "", MAX_BUFFERED_MSGS, PERSIST_DIR );
 
-			// Create the payload as a text CSV string
-			string payload = to_string(++nsample) + "," +
-								tmbuf + "," + to_string(x);
-			cout << payload << endl;
+    mqtt::connect_options connOpts;
+    connOpts.set_keep_alive_interval( MAX_BUFFERED_MSGS * PERIOD );
+    connOpts.set_clean_session( true );
+    connOpts.set_automatic_reconnect( true );
 
-			// Publish to the topic
-			top.publish(std::move(payload));
+    // Create a topic object. This is a convenience since we will
+    // repeatedly publish messages with the same parameters.
+    mqtt::topic top( cli, TOPIC, QOS, true );
 
-			tm += PERIOD;
-		}
+    try {
+        // Connect to the MQTT broker
+        cout << "Connecting to server '" << address << "'..." << flush;
+        cli.connect( connOpts )->wait();
+        cout << "OK\n" << endl;
 
-		// Disconnect
-		cout << "\nDisconnecting..." << flush;
-		cli.disconnect()->wait();
-		cout << "OK" << endl;
-	}
-	catch (const mqtt::exception& exc) {
-		cerr << exc.what() << endl;
-		return 1;
-	}
+        // char tmbuf[32];
+        // unsigned nsample = 0;
 
- 	return 0;
+        // The time at which to reads the next sample, starting now
+        auto tm = steady_clock::now();
+
+        laser.setSerialPort( port );
+        laser.setSerialBaudrate( baud );
+        laser.setIntensities( intensities );
+
+        Json::StreamWriterBuilder builder;
+        builder.settings_["indentation"] = "";
+
+        Json::Value fromScratch;
+
+        while( running ) {
+            this_thread::sleep_until( tm );
+
+            bool hardError;
+            LaserScan scan;
+
+            if( laser.doProcessSimple( scan, hardError ) ) {
+                fprintf( stderr, "received: %u ranges\n", ( unsigned int )scan.ranges.size() );
+
+            }
+
+            fromScratch["ranges"] = iterable2json( scan.ranges );
+            fromScratch["intensities"] = iterable2json( scan.intensities );
+            fromScratch["self_time_stamp"] = scan.self_time_stamp;
+            fromScratch["system_time_stamp"] = scan.system_time_stamp ;
+
+            // string payload = to_string( ( unsigned int )scan.ranges.size() );
+            // cout << fromScratch << endl;
+
+            // Publish to the topic
+            top.publish( std::move( Json::writeString( builder, fromScratch ) ) );
+
+            tm += PERIOD;
+        }
+
+        // Disconnect
+        cout << "\nDisconnecting..." << flush;
+        cli.disconnect()->wait();
+        cout << "OK" << endl;
+    } catch( const mqtt::exception& exc ) {
+        cerr << exc.what() << endl;
+        return 1;
+    }
+
+    return 0;
 }
